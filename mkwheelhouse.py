@@ -8,6 +8,7 @@ import glob
 import mimetypes
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -76,8 +77,6 @@ class Bucket(object):
         """
         Generate the keys in an S3 bucket.
 
-        :param bucket: Name of the S3 bucket.
-        :param prefix: Only fetch keys that start with this prefix (optional).
         :param suffix: Only fetch keys that end with this suffix (optional).
         """
         s3 = boto3.client('s3')
@@ -87,8 +86,6 @@ class Bucket(object):
             kwargs['Prefix'] = self.prefix
 
         while True:
-            # The S3 API response is a large blob of metadata.
-            # 'Contents' contains information about the listed objects.
             resp = s3.list_objects_v2(**kwargs)
             for obj in resp['Contents']:
                 key = obj['Key']
@@ -164,11 +161,10 @@ def run(args, pip_wheel_args):
     if not bucket.has_key('index.html'):
         bucket.put('<!DOCTYPE html><html></html>', 'index.html', acl=args.acl)
     index_url = bucket.generate_url('index.html')
-    print(bucket.make_index())
-    # build_dir = build_wheels(index_url, pip_wheel_args, args.exclude)
-    # bucket.sync(build_dir, acl=args.acl)
-    # bucket.put(bucket.make_index(), key='index.html', acl=args.acl)
-    # shutil.rmtree(build_dir)
+    build_dir = build_wheels(index_url, pip_wheel_args, args.exclude)
+    bucket.sync(build_dir, acl=args.acl)
+    bucket.put(bucket.make_index(), key='index.html', acl=args.acl)
+    shutil.rmtree(build_dir)
     print('mkwheelhouse: index written to', index_url)
 
 
