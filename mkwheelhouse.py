@@ -61,7 +61,8 @@ class Bucket(object):
 
     def has_key(self, key):
         try:
-            self.s3.head_object(Bucket=self.name, Key=key)
+            self.s3.head_object(Bucket=self.name,
+                                Key=os.path.join(self.prefix, key))
             return True
         except ClientError as exc:
             if exc.response['Error']['Code'] != '404':
@@ -71,7 +72,8 @@ class Bucket(object):
     def generate_url(self, key):
         return self.s3_unsigned.generate_presigned_url(
             ClientMethod='get_object',
-            Params={'Bucket': self.name, 'Key': key})
+            Params={'Bucket': self.name,
+                    'Key': os.path.join(self.prefix, key)})
 
     def list(self, suffix=''):
         """
@@ -107,7 +109,9 @@ class Bucket(object):
             '--region', self.region, '--acl', acl])
 
     def put(self, body, key, acl):
-        self.s3.put_object(Bucket=self.name, Body=body, ACL=acl,
+        self.s3.put_object(Bucket=self.name,
+                           Key=os.path.join(self.prefix, key),
+                           Body=body, ACL=acl,
                            ContentType=mimetypes.guess_type(key)[0])
 
     def make_index(self):
