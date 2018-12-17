@@ -2,10 +2,10 @@ from setuptools import setup
 
 install_requires = [
     'awscli >= 1.3.6',
-    'boto >= 2.38.0',
+    'boto3 >= 1.9.0',
     'yattag >= 0.9.2',
     'wheel >= 0.23.0',
-    'pip >= 1.5.4',
+    'pip >= 9.0.0',
     'six >= 1.9.0',
 ]
 
