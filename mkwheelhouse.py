@@ -34,7 +34,8 @@ class Bucket(object):
         url = urlparse(url)
         self.name = url.netloc
         self.prefix = url.path.lstrip('/')
-        self.s3 = boto3.client(
+        self.s3 = boto3.client("s3")
+        self.s3_unsigned = boto3.client(
             "s3", config=Config(signature_version=botocore.UNSIGNED))
         self.region = self._get_region()
 
@@ -67,7 +68,7 @@ class Bucket(object):
             return False
 
     def generate_url(self, key):
-        return self.s3.generate_presigned_url(
+        return self.s3_unsigned.generate_presigned_url(
             ClientMethod='get_object',
             Params={'Bucket': self.name, 'Key': key})
 
@@ -163,6 +164,7 @@ def run(args, pip_wheel_args):
     if not bucket.has_key('index.html'):
         bucket.put('<!DOCTYPE html><html></html>', 'index.html', acl=args.acl)
     index_url = bucket.generate_url('index.html')
+    print(bucket.make_index())
     # build_dir = build_wheels(index_url, pip_wheel_args, args.exclude)
     # bucket.sync(build_dir, acl=args.acl)
     # bucket.put(bucket.make_index(), key='index.html', acl=args.acl)
