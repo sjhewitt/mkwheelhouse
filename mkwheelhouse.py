@@ -14,7 +14,9 @@ import tempfile
 from six.moves.urllib.parse import urlparse
 
 import boto3
+import botocore
 import yattag
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 
@@ -32,7 +34,8 @@ class Bucket(object):
         url = urlparse(url)
         self.name = url.netloc
         self.prefix = url.path.lstrip('/')
-        self.s3 = boto3.client("s3")
+        self.s3 = boto3.client(
+            "s3", config=Config(signature_version=botocore.UNSIGNED))
         self.region = self._get_region()
 
     def _get_region(self):
