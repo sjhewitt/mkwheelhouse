@@ -5,7 +5,6 @@ from __future__ import unicode_literals
 
 import argparse
 import glob
-import json
 import mimetypes
 import os
 import re
@@ -15,9 +14,11 @@ import sys
 import tempfile
 from six.moves.urllib.parse import urlparse
 
-import boto
-import boto.s3.connection
+import boto3
+import botocore
 import yattag
+from botocore.config import Config
+from botocore.exceptions import ClientError
 
 
 def spawn(args, capture_output=False):
@@ -27,22 +28,6 @@ def spawn(args, capture_output=False):
     return subprocess.check_call(args)
 
 
-class UrlSafeS3Connection(object):
-    # Hack to work around Boto bug that generates invalid URLs when
-    # query_auth=False and an IAM role is in use.
-    # See: https://github.com/boto/boto/issues/2043
-    # See: https://github.com/WhoopInc/mkwheelhouse/issues/11
-    def __init__(self, s3_connection):
-        self.connection = s3_connection
-        self.security_token = s3_connection.provider.security_token
-
-    def __enter__(self):
-        self.connection.provider.security_token = ''
-
-    def __exit__(self, type, value, traceback):
-        self.connection.provider.security_token = self.security_token
-
-
 class Bucket(object):
     def __init__(self, url):
         if not re.match(r'^(s3:)?//', url):
@@ -50,14 +35,10 @@ class Bucket(object):
         url = urlparse(url)
         self.name = url.netloc
         self.prefix = url.path.lstrip('/')
-        # Boto currently can't handle names with dots unless the region
-        # is specified explicitly.
-        # See: https://github.com/boto/boto/issues/2836
+        self.s3 = boto3.client("s3")
+        self.s3_unsigned = boto3.client(
+            "s3", config=Config(signature_version=botocore.UNSIGNED))
         self.region = self._get_region()
-        self.s3 = boto.s3.connect_to_region(
-            region_name=self.region,
-            calling_format=boto.s3.connection.OrdinaryCallingFormat())
-        self.bucket = self.s3.get_bucket(self.name)
 
     def _get_region(self):
         # S3, for what appears to be backwards-compatibility
@@ -69,10 +50,8 @@ class Bucket(object):
         #
         # Note also that someday, Boto should handle this for us
         # instead of the AWS command line tools.
-        stdout = spawn([
-            'aws', 's3api', 'get-bucket-location',
-            '--bucket', self.name], capture_output=True)
-        location = json.loads(stdout.decode())['LocationConstraint']
+        location = self.s3.get_bucket_location(
+            Bucket=self.name)["LocationConstraint"]
         if not location:
             return 'us-east-1'
         elif location == 'EU':
@@ -80,47 +59,63 @@ class Bucket(object):
         else:
             return location
 
-    def get_key(self, key):
-        if not isinstance(key, boto.s3.key.Key):
-            return boto.s3.key.Key(bucket=self.bucket,
-                                   name=os.path.join(self.prefix, key))
-        return key
-
     def has_key(self, key):
-        return self.get_key(key).exists()
+        try:
+            self.s3.head_object(Bucket=self.name, Key=key)
+            return True
+        except ClientError as exc:
+            if exc.response['Error']['Code'] != '404':
+                raise
+            return False
 
     def generate_url(self, key):
-        key = self.get_key(key)
-        with UrlSafeS3Connection(self.s3):
-            return key.generate_url(expires_in=0, query_auth=False)
+        return self.s3_unsigned.generate_presigned_url(
+            ClientMethod='get_object',
+            Params={'Bucket': self.name, 'Key': key})
 
-    def list(self):
-        return self.bucket.list(prefix=self.prefix)
+    def list(self, suffix=''):
+        """
+        Generate the keys in an S3 bucket.
+
+        :param suffix: Only fetch keys that end with this suffix (optional).
+        """
+        s3 = boto3.client('s3')
+        kwargs = {'Bucket': self.name}
+
+        if self.prefix:
+            kwargs['Prefix'] = self.prefix
+
+        while True:
+            resp = s3.list_objects_v2(**kwargs)
+            for obj in resp['Contents']:
+                key = obj['Key']
+                if key.startswith(self.prefix) and key.endswith(suffix):
+                    yield key
+
+            # The S3 API is paginated, returning up to 1000 keys at a time.
+            # Pass the continuation token into the next response, until we
+            # reach the final page (when this field is missing).
+            try:
+                kwargs['ContinuationToken'] = resp['NextContinuationToken']
+            except KeyError:
+                break
 
     def sync(self, local_dir, acl):
         return spawn([
-            'aws', 's3', 'sync',
+            sys.executable, '-m', 'awscli', 's3', 'sync',
             local_dir, 's3://{0}/{1}'.format(self.name, self.prefix),
             '--region', self.region, '--acl', acl])
 
     def put(self, body, key, acl):
-        key = self.get_key(key)
-
-        content_type = mimetypes.guess_type(key.name)[0]
-        if content_type:
-            key.content_type = content_type
-
-        key.set_contents_from_string(body, replace=True, policy=acl)
-
-    def list_wheels(self):
-        return [key for key in self.list() if key.name.endswith('.whl')]
+        self.s3.put_object(Bucket=self.name, Body=body, ACL=acl,
+                           ContentType=mimetypes.guess_type(key)[0])
 
     def make_index(self):
         doc, tag, text = yattag.Doc().tagtext()
         with tag('html'):
-            for key in self.list_wheels():
+            for key in self.list('.whl'):
                 with tag('a', href=self.generate_url(key)):
-                    text(key.name)
+                    text(key)
                 doc.stag('br')
 
         return doc.getvalue()
@@ -129,12 +124,9 @@ class Bucket(object):
 def build_wheels(index_url, pip_wheel_args, exclusions):
     build_dir = tempfile.mkdtemp(prefix='mkwheelhouse-')
     args = [
-        'pip', 'wheel',
+        sys.executable, '-m', 'pip', 'wheel',
         '--wheel-dir', build_dir,
         '--find-links', index_url,
-        # pip < 7 doesn't invalidate HTTP cache based on last-modified
-        # header, so disable it.
-        '--no-cache-dir'
     ] + pip_wheel_args
     spawn(args)
     for exclusion in exclusions:
